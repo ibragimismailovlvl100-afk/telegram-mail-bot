@@ -2,8 +2,8 @@ import os
 import json
 import random
 import string
+import asyncio
 from pathlib import Path
-
 import requests
 from flask import Flask, request
 from telegram import Update, ReplyKeyboardMarkup
@@ -21,35 +21,29 @@ from telegram.ext import (
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 PORT = int(os.environ.get("PORT", 10000))
+WEBHOOK_URL = os.getenv("RENDER_EXTERNAL_URL")
+
+if not TOKEN or not WEBHOOK_URL:
+    raise RuntimeError("BOT_TOKEN или RENDER_EXTERNAL_URL не заданы в Environment Variables!")
 
 DATA_FILE = Path("data.json")
 MAIL_TM_API = "https://api.mail.tm"
 
-if not TOKEN:
-    raise RuntimeError("BOT_TOKEN не задан в Render Environment")
-
 # =========================
-# FLASK
+# FLASK & TELEGRAM
 # =========================
 app = Flask(__name__)
+# ВАЖНО: updater=None обязателен для вебхуков, чтобы не падал с ошибкой Updater
+telegram_app = Application.builder().token(TOKEN).updater(None).build()
 
 # =========================
-# КЛАВИАТУРА
-# =========================
-MAIN_KEYBOARD = ReplyKeyboardMarkup(
-    [
-        ["📧 New Email", "📨 Check Inbox"],
-    ],
-    resize_keyboard=True,
-)
-
-# =========================
-# ДАННЫЕ
+# ДАННЫЕ И MAIL.TM
 # =========================
 def load_data():
     if DATA_FILE.exists():
         with open(DATA_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            try: return json.load(f)
+            except: pass
     return {"users": {}}
 
 data = load_data()
@@ -65,28 +59,14 @@ def ensure_user(user_id):
         save_data()
     return data["users"][uid]
 
-# =========================
-# MAIL.TM
-# =========================
 def create_email():
     domains = requests.get(f"{MAIL_TM_API}/domains").json()["hydra:member"]
     domain = random.choice(domains)["domain"]
-
     username = "".join(random.choices(string.ascii_lowercase, k=10))
     password = "Qwerty123"
-
     email = f"{username}@{domain}"
-
-    requests.post(
-        f"{MAIL_TM_API}/accounts",
-        json={"address": email, "password": password},
-    )
-
-    token = requests.post(
-        f"{MAIL_TM_API}/token",
-        json={"address": email, "password": password},
-    ).json()["token"]
-
+    requests.post(f"{MAIL_TM_API}/accounts", json={"address": email, "password": password})
+    token = requests.post(f"{MAIL_TM_API}/token", json={"address": email, "password": password}).json()["token"]
     return email, token
 
 def check_mail(token):
@@ -95,72 +75,51 @@ def check_mail(token):
     return data.get("hydra:member", [])
 
 # =========================
-# TELEGRAM ЛОГИКА
+# ЛОГИКА
 # =========================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ensure_user(update.effective_user.id)
-    await update.message.reply_text(
-        "Выбери действие:",
-        reply_markup=MAIN_KEYBOARD,
-    )
+    await update.message.reply_text("Выбери действие:", reply_markup=ReplyKeyboardMarkup([["📧 New Email", "📨 Check Inbox"]], resize_keyboard=True))
 
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = ensure_user(update.effective_user.id)
     text = update.message.text
-
     if text == "📧 New Email":
         await update.message.reply_text("Создаю почту...")
         email, token = create_email()
         user["mailbox"] = {"email": email, "token": token}
         save_data()
         await update.message.reply_text(f"✅ {email}")
-
     elif text == "📨 Check Inbox":
         mailbox = user.get("mailbox")
         if not mailbox:
             await update.message.reply_text("Сначала создай почту.")
             return
-
         messages = check_mail(mailbox["token"])
         if not messages:
             await update.message.reply_text("📭 Писем нет")
             return
-
         for msg in messages:
-            await update.message.reply_text(
-                f"📨 Тема: {msg.get('subject')}"
-            )
+            await update.message.reply_text(f"📨 Тема: {msg.get('subject')}")
 
-# =========================
-# TELEGRAM APP
-# =========================
-telegram_app = Application.builder().token(TOKEN).build()
 telegram_app.add_handler(CommandHandler("start", start))
 telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 
-
+# =========================
+# WEBHOOKS
+# =========================
 @app.route("/", methods=["GET"])
 def home():
     return "Bot is running"
 
-
 @app.route("/webhook", methods=["POST"])
 def webhook():
     update = Update.de_json(request.get_json(force=True), telegram_app.bot)
-    telegram_app.update_queue.put_nowait(update)
+    asyncio.run(telegram_app.process_update(update))
     return "ok"
 
-
 if __name__ == "__main__":
-    webhook_url = os.getenv("RENDER_EXTERNAL_URL") + "/webhook"
-
-    # Создаем цикл событий
-    loop = asyncio.get_event_loop()
-
-    # Инициализируем и запускаем бота
-    loop.run_until_complete(telegram_app.initialize())
-    loop.run_until_complete(telegram_app.bot.set_webhook(webhook_url))
-    loop.run_until_complete(telegram_app.start())
-
-    # Запускаем Flask (этот метод блокирующий, он будет крутиться бесконечно)
+    # Инициализация бота
+    asyncio.run(telegram_app.initialize())
+    asyncio.run(telegram_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook"))
+    
     app.run(host="0.0.0.0", port=PORT)
