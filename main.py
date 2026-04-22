@@ -152,15 +152,15 @@ def webhook():
 
 
 if __name__ == "__main__":
-    import asyncio
-
     webhook_url = os.getenv("RENDER_EXTERNAL_URL") + "/webhook"
 
-    async def setup():
-        await telegram_app.initialize()
-        await telegram_app.bot.set_webhook(webhook_url)
-        await telegram_app.start()
+    # Создаем цикл событий
+    loop = asyncio.get_event_loop()
 
-    asyncio.run(setup())
+    # Инициализируем и запускаем бота
+    loop.run_until_complete(telegram_app.initialize())
+    loop.run_until_complete(telegram_app.bot.set_webhook(webhook_url))
+    loop.run_until_complete(telegram_app.start())
 
+    # Запускаем Flask (этот метод блокирующий, он будет крутиться бесконечно)
     app.run(host="0.0.0.0", port=PORT)
