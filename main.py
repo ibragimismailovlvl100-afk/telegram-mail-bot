@@ -132,29 +132,35 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
 # =========================
-# ЗАПУСК TELEGRAM
+# TELEGRAM APP
 # =========================
 telegram_app = Application.builder().token(TOKEN).build()
 telegram_app.add_handler(CommandHandler("start", start))
 telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 
-# =========================
-# WEBHOOK ROUTE
-# =========================
+
 @app.route("/", methods=["GET"])
 def home():
     return "Bot is running"
 
+
 @app.route("/webhook", methods=["POST"])
 def webhook():
     update = Update.de_json(request.get_json(force=True), telegram_app.bot)
-    asyncio.run(telegram_app.process_update(update))
+    telegram_app.update_queue.put_nowait(update)
     return "ok"
 
-# =========================
-# MAIN
-# =========================
+
 if __name__ == "__main__":
+    import asyncio
+
     webhook_url = os.getenv("RENDER_EXTERNAL_URL") + "/webhook"
-    asyncio.run(telegram_app.bot.set_webhook(webhook_url))
+
+    async def setup():
+        await telegram_app.initialize()
+        await telegram_app.bot.set_webhook(webhook_url)
+        await telegram_app.start()
+
+    asyncio.run(setup())
+
     app.run(host="0.0.0.0", port=PORT)
