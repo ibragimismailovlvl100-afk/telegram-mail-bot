@@ -146,9 +146,9 @@ def home():
     return "Bot is running"
 
 @app.route("/webhook", methods=["POST"])
-async def webhook():
-    update = Update.de_json(request.get_json(), telegram_app.bot)
-    await telegram_app.process_update(update)
+def webhook():
+    update = Update.de_json(request.get_json(force=True), telegram_app.bot)
+    asyncio.run(telegram_app.process_update(update))
     return "ok"
 
 # =========================
@@ -156,5 +156,5 @@ async def webhook():
 # =========================
 if __name__ == "__main__":
     webhook_url = os.getenv("RENDER_EXTERNAL_URL") + "/webhook"
-    telegram_app.bot.set_webhook(webhook_url)
+    asyncio.run(telegram_app.bot.set_webhook(webhook_url))
     app.run(host="0.0.0.0", port=PORT)
